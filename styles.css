@@ -65,24 +65,46 @@
 /* MarkdownRenderer 生成的元素间距压缩 */
 .rag-msg-content p,
 .rag-msg-content ul,
-.rag-msg-content ol {
-  margin: 0.25em 0;
+.rag-msg-content ol,
+.rag-msg-content blockquote,
+.rag-msg-content pre {
+  margin: 0.1em 0;
 }
 .rag-msg-content p:first-child,
 .rag-msg-content ul:first-child,
-.rag-msg-content ol:first-child {
+.rag-msg-content ol:first-child,
+.rag-msg-content blockquote:first-child,
+.rag-msg-content pre:first-child,
+.rag-msg-content h1:first-child,
+.rag-msg-content h2:first-child,
+.rag-msg-content h3:first-child,
+.rag-msg-content h4:first-child,
+.rag-msg-content h5:first-child,
+.rag-msg-content h6:first-child {
   margin-top: 0;
 }
 .rag-msg-content p:last-child,
 .rag-msg-content ul:last-child,
-.rag-msg-content ol:last-child {
+.rag-msg-content ol:last-child,
+.rag-msg-content blockquote:last-child,
+.rag-msg-content pre:last-child,
+.rag-msg-content h1:last-child,
+.rag-msg-content h2:last-child,
+.rag-msg-content h3:last-child,
+.rag-msg-content h4:last-child,
+.rag-msg-content h5:last-child,
+.rag-msg-content h6:last-child {
   margin-bottom: 0;
 }
-.rag-msg-content li {
-  margin: 0;
-}
-.rag-msg-content pre {
-  margin: 0.25em 0;
+.rag-msg-content li,
+.rag-msg-content h1,
+.rag-msg-content h2,
+.rag-msg-content h3,
+.rag-msg-content h4,
+.rag-msg-content h5,
+.rag-msg-content h6 {
+  margin: 0.05em 0;
+  line-height: 1.4;
 }
 
 /* ── 思考中动画 ── */
@@ -167,6 +189,22 @@
 .rag-send-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.rag-stop-btn {
+  align-self: flex-end;
+  padding: 6px 16px;
+  border: none;
+  border-radius: var(--radius-m);
+  background-color: var(--text-error);
+  color: var(--text-on-accent);
+  font-size: var(--font-ui-small);
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.rag-stop-btn:hover {
+  filter: brightness(1.2);
 }
 
 /* ── 文件夹选择 chips ── */
