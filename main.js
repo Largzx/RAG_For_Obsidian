@@ -5274,7 +5274,9 @@ ${truncated}`
         content: await vault.read(f)
       }))
     );
-    const texts = contents.map((c2) => this.stripMarkdown(c2.content));
+    const texts = contents.map(
+      (c2) => c2.file.basename + "\n" + this.stripMarkdown(c2.content)
+    );
     const hashes = await Promise.all(
       contents.map((c2) => this.hashContent(c2.content))
     );
@@ -5525,9 +5527,12 @@ var RagView = class extends import_obsidian4.ItemView {
     this.messages.push(userMsg);
     this.renderMessage(userMsg);
     const loadingEl = this.createLoadingEl();
+    this.abortCtrl = new AbortController();
     this.setWaiting(true);
     try {
       const { context, sources } = await this.plugin.indexManager.searchForRag(text);
+      if (this.abortCtrl.signal.aborted)
+        return;
       if (!context) {
         this.removeLoadingEl(loadingEl);
         const errMsg = {
@@ -5536,7 +5541,6 @@ var RagView = class extends import_obsidian4.ItemView {
         };
         this.messages.push(errMsg);
         this.renderMessage(errMsg);
-        this.setWaiting(false);
         return;
       }
       const systemPrompt = `${this.plugin.settings.systemPrompt}
@@ -5552,12 +5556,13 @@ ${context}`;
       ];
       let answer = "";
       const answerEl = this.createStreamingEl();
-      this.abortCtrl = new AbortController();
       await this.llm.chatStream(chatMessages, (delta) => {
         answer += delta;
         answerEl.setText(answer);
         this.scrollToBottom();
       }, this.abortCtrl.signal);
+      if (this.abortCtrl.signal.aborted)
+        return;
       this.removeStreamingEl(answerEl);
       const assistantMsg = {
         role: "assistant",
