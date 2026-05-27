@@ -5044,18 +5044,32 @@ var IndexManager = class {
     if (!embedding)
       return { context: "", sources: [] };
     const topK = this.plugin.settings.ragTopK;
-    let results;
+    let hits = [];
+    const searchParams = {
+      vector: { value: embedding, property: "embedding" },
+      similarity: 0.15,
+      limit: topK
+    };
     try {
-      results = await searchVector(this.db, {
-        vector: { value: embedding, property: "embedding" },
-        similarity: 0.2,
-        limit: topK
+      const r = await search2(this.db, {
+        ...searchParams,
+        mode: "vector"
       });
+      if (r.hits?.length)
+        hits = r.hits;
     } catch (e) {
-      console.error("RAG: searchVector \u5931\u8D25:", e);
-      return { context: "", sources: [] };
+      console.warn("RAG: search(mode:vector) \u5931\u8D25\uFF0C\u56DE\u9000\u5230 searchVector:", e);
     }
-    if (!results.hits || results.hits.length === 0) {
+    if (hits.length === 0) {
+      try {
+        const r = await searchVector(this.db, searchParams);
+        if (r.hits)
+          hits = r.hits;
+      } catch (e) {
+        console.error("RAG: searchVector \u4E5F\u5931\u8D25:", e);
+      }
+    }
+    if (hits.length === 0) {
       console.warn(
         `RAG: \u68C0\u7D22\u7ED3\u679C\u4E3A\u7A7A\uFF08\u7D22\u5F15\u5171 ${this.size} \u6761\uFF09\uFF0Cembedding \u524D 4 \u7EF4:`,
         embedding.slice(0, 8)
@@ -5065,7 +5079,7 @@ var IndexManager = class {
     const vault = this.plugin.app.vault;
     const contextParts = [];
     const sourcePaths = [];
-    for (const hit of results.hits) {
+    for (const hit of hits) {
       const path = hit.document.path;
       const file = vault.getAbstractFileByPath(path);
       if (!(file instanceof import_obsidian3.TFile))
@@ -5079,7 +5093,7 @@ ${truncated}`
       );
       sourcePaths.push(path);
     }
-    console.log(`RAG: \u68C0\u7D22\u5230 ${results.hits.length} \u6761\u76F8\u5173\u7B14\u8BB0\uFF0C\u6700\u9AD8\u5206 ${results.hits[0]?.score ?? "?"}`);
+    console.log(`RAG: \u68C0\u7D22\u5230 ${hits.length} \u6761\u76F8\u5173\u7B14\u8BB0\uFF0C\u6700\u9AD8\u5206 ${hits[0]?.score ?? "?"}`);
     return {
       context: contextParts.join("\n\n"),
       sources: sourcePaths
@@ -5358,7 +5372,7 @@ var LlmAPI = class {
     this.maxTokens = maxTokens;
   }
   /** 流式对话，每次有增量文本时回调 onDelta，返回完整文本 */
-  async chatStream(messages, onDelta) {
+  async chatStream(messages, onDelta, signal) {
     if (!this.apiKey) {
       throw new Error("\u672A\u914D\u7F6E LLM API Key");
     }
@@ -5375,7 +5389,8 @@ var LlmAPI = class {
         messages,
         max_tokens: this.maxTokens,
         stream: true
-      })
+      }),
+      signal
     });
     if (!response.ok) {
       const err = await response.text();
@@ -5385,30 +5400,37 @@ var LlmAPI = class {
     const decoder = new TextDecoder();
     let full = "";
     let buffer = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done)
-        break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith("data: "))
-          continue;
-        const payload = trimmed.slice(6);
-        if (payload === "[DONE]")
-          continue;
-        try {
-          const parsed = JSON.parse(payload);
-          const delta = parsed.choices?.[0]?.delta?.content ?? "";
-          if (delta) {
-            full += delta;
-            onDelta(delta);
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done)
+          break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith("data: "))
+            continue;
+          const payload = trimmed.slice(6);
+          if (payload === "[DONE]")
+            continue;
+          try {
+            const parsed = JSON.parse(payload);
+            const delta = parsed.choices?.[0]?.delta?.content ?? "";
+            if (delta) {
+              full += delta;
+              onDelta(delta);
+            }
+          } catch {
           }
-        } catch {
         }
       }
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") {
+        return full;
+      }
+      throw e;
     }
     return full;
   }
@@ -5421,6 +5443,7 @@ var RagView = class extends import_obsidian4.ItemView {
     super(leaf);
     this.messages = [];
     this.isWaiting = false;
+    this.abortCtrl = null;
     this.plugin = plugin;
     this.llm = new LlmAPI(
       plugin.settings.llmApiKey,
@@ -5468,6 +5491,12 @@ var RagView = class extends import_obsidian4.ItemView {
       text: "\u53D1\u9001"
     });
     this.sendBtn.addEventListener("click", () => this.send());
+    this.stopBtn = inputArea.createEl("button", {
+      cls: "rag-stop-btn",
+      text: "\u505C\u6B62"
+    });
+    this.stopBtn.style.display = "none";
+    this.stopBtn.addEventListener("click", () => this.stop());
     this.addWelcomeMessage();
   }
   addWelcomeMessage() {
@@ -5496,8 +5525,7 @@ var RagView = class extends import_obsidian4.ItemView {
     this.messages.push(userMsg);
     this.renderMessage(userMsg);
     const loadingEl = this.createLoadingEl();
-    this.isWaiting = true;
-    this.sendBtn.setAttr("disabled", "true");
+    this.setWaiting(true);
     try {
       const { context, sources } = await this.plugin.indexManager.searchForRag(text);
       if (!context) {
@@ -5508,8 +5536,7 @@ var RagView = class extends import_obsidian4.ItemView {
         };
         this.messages.push(errMsg);
         this.renderMessage(errMsg);
-        this.isWaiting = false;
-        this.sendBtn.removeAttribute("disabled");
+        this.setWaiting(false);
         return;
       }
       const systemPrompt = `${this.plugin.settings.systemPrompt}
@@ -5525,11 +5552,12 @@ ${context}`;
       ];
       let answer = "";
       const answerEl = this.createStreamingEl();
+      this.abortCtrl = new AbortController();
       await this.llm.chatStream(chatMessages, (delta) => {
         answer += delta;
         answerEl.setText(answer);
         this.scrollToBottom();
-      });
+      }, this.abortCtrl.signal);
       this.removeStreamingEl(answerEl);
       const assistantMsg = {
         role: "assistant",
@@ -5541,15 +5569,31 @@ ${context}`;
       this.scrollToBottom();
     } catch (e) {
       this.removeLoadingEl(loadingEl);
-      const errMsg = {
-        role: "assistant",
-        text: `\u274C \u51FA\u9519\u4E86\uFF1A${e.message}`
-      };
-      this.messages.push(errMsg);
-      this.renderMessage(errMsg);
+      const isAbort = e instanceof DOMException && e.name === "AbortError";
+      if (!isAbort) {
+        const errMsg = {
+          role: "assistant",
+          text: `\u274C \u51FA\u9519\u4E86\uFF1A${e.message}`
+        };
+        this.messages.push(errMsg);
+        this.renderMessage(errMsg);
+      }
     } finally {
-      this.isWaiting = false;
-      this.sendBtn.removeAttribute("disabled");
+      this.setWaiting(false);
+      this.abortCtrl = null;
+    }
+  }
+  stop() {
+    this.abortCtrl?.abort();
+  }
+  setWaiting(waiting) {
+    this.isWaiting = waiting;
+    if (waiting) {
+      this.sendBtn.style.display = "none";
+      this.stopBtn.style.display = "";
+    } else {
+      this.sendBtn.style.display = "";
+      this.stopBtn.style.display = "none";
     }
   }
   // ─── 渲染辅助方法 ─────────────────────────────
